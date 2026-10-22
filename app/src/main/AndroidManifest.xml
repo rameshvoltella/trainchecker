@@ -27,7 +27,28 @@
 
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Android Auto voice: "Hey Google, play KDTY gate" (handled by GateMediaService). -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
+
+        <!-- Android Auto: shown as a media app (template car apps from outside the Play Store
+             aren't listed by Android Auto on our phone; media apps are). -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
+        <!-- Must be exported for Android Auto to browse it. -->
+        <service
+            android:name=".car.GateMediaService"
+            android:exported="true"
+            tools:ignore="ExportedService">
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".GateMonitorService"
