@@ -260,8 +260,7 @@ class GateMediaService : MediaBrowserServiceCompat() {
     }
 
     private fun stop() {
-        GateMonitorService.stop(this)
-        localRun?.cancel()
+        GateMonitorService.stop(this)   // also stops a run started here
         localRun = null
     }
 }

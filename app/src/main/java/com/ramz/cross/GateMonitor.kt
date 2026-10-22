@@ -4,10 +4,13 @@ import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -95,6 +98,7 @@ class GateMonitor private constructor(context: Context) {
     private val cacheFile = File(context.filesDir, "gate_cache.json")
 
     private var cacheLoaded = false
+    private var activeRun: Job? = null
     private var trains: List<Train> = emptyList()
     private var trainsFetchedAt = 0L
     private var lastFullScan = 0L
@@ -112,6 +116,12 @@ class GateMonitor private constructor(context: Context) {
      * train again instead of only the nearby ones.
      */
     suspend fun run(continuous: Boolean, checkAll: Boolean = false) {
+        // Only one run at a time, wherever it was started (phone service or Android Auto).
+        val me = currentCoroutineContext()[Job]
+        synchronized(this) {
+            activeRun?.takeIf { it != me }?.cancel()
+            activeRun = me
+        }
         _state.update {
             it.copy(running = true, monitoring = continuous, error = null,
                 fromKottayam = SideState(SideStatus.CHECKING), fromErnakulam = SideState(SideStatus.CHECKING))
@@ -127,11 +137,29 @@ class GateMonitor private constructor(context: Context) {
             } while (continuous)
         } finally {
             withContext(NonCancellable + Dispatchers.IO) { saveCache() }
-            _state.update {
-                it.copy(running = false, monitoring = false, checking = false, phase = null,
-                    fromKottayam = it.fromKottayam.unlessUnfinished(), fromErnakulam = it.fromErnakulam.unlessUnfinished())
+            synchronized(this) {
+                // A newer run may already have taken over; then the state is its business.
+                if (activeRun == me) {
+                    activeRun = null
+                    showStopped()
+                }
             }
         }
+    }
+
+    /**
+     * Stops whatever run is active. The screen shows "stopped" straight away; a network request
+     * already under way finishes in the background and its result is dropped.
+     */
+    fun stop() = synchronized(this) {
+        activeRun?.cancel()
+        activeRun = null
+        showStopped()
+    }
+
+    private fun showStopped() = _state.update {
+        it.copy(running = false, monitoring = false, checking = false, phase = null,
+            fromKottayam = it.fromKottayam.unlessUnfinished(), fromErnakulam = it.fromErnakulam.unlessUnfinished())
     }
 
     // A side still being checked when we stop has no answer.
@@ -185,6 +213,7 @@ class GateMonitor private constructor(context: Context) {
         _state.update { it.copy(phase = "Checking ${candidates.size} nearby trains", done = 0, total = candidates.size) }
         withContext(Dispatchers.IO) {
             for ((train, est) in candidates) {
+                ensureActive()   // stop between trains when stopped
                 if (found[est.approach] != GateLevel.CLOSED) {
                     checkTrain(train, est, now)?.let { hit -> record(found, hit) }
                 }
@@ -311,6 +340,7 @@ class GateMonitor private constructor(context: Context) {
         _state.update { it.copy(phase = "Updating times of ${due.size} trains", done = 0, total = due.size) }
         withContext(Dispatchers.IO) {
             for ((train, est) in due) {
+                ensureActive()   // stop between trains when stopped
                 try {
                     railYatri.status(train.number, startDay(est.startDate, now), config).estimate
                         ?.let { updateEstimate(train.number, it) }
