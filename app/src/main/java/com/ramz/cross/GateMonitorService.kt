@@ -64,7 +64,7 @@ class GateMonitorService : Service() {
                 context, Intent(context, GateMonitorService::class.java).setAction(ACTION_ALL)
             )
 
-        /** Stops any check or monitoring, including one started from Android Auto. */
+        /** Stops any check or monitoring that is running. */
         fun stop(context: Context) {
             GateMonitor.get(context).stop()
             context.stopService(Intent(context, GateMonitorService::class.java))
@@ -113,7 +113,7 @@ class GateMonitorService : Service() {
                     monitor.state.value.let { s -> listOfNotNull(s.fromKottayam.hit, s.fromErnakulam.hit) }
                         .forEach { alert(nm, it) }
                 } finally {
-                    // Also when the run was stopped from elsewhere (e.g. Android Auto), so the
+                    // Also when the run was stopped from elsewhere (e.g. GateMonitor.stop), so the
                     // notification doesn't stay behind.
                     stopSelf()
                 }

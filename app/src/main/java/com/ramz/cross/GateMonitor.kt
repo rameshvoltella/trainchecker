@@ -118,7 +118,7 @@ class GateMonitor private constructor(context: Context) {
      * train again instead of only the nearby ones.
      */
     suspend fun run(continuous: Boolean, checkAll: Boolean = false) {
-        // Only one run at a time, wherever it was started (phone service or Android Auto).
+        // Only one run at a time, however it was started.
         val me = currentCoroutineContext()[Job]
         synchronized(this) {
             activeRun?.takeIf { it != me }?.cancel()

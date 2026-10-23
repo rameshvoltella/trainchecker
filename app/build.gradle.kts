@@ -66,7 +66,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.activity.compose)
     implementation(libs.jsoup)
-    implementation(libs.androidx.media)
     implementation(libs.osmdroid)
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)
