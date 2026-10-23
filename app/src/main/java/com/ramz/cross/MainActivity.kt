@@ -28,6 +28,8 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -35,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
@@ -96,69 +99,113 @@ fun GateScreen() {
         } else action()
     }
 
-    Scaffold(modifier = Modifier.fillMaxSize()) { inner ->
-        Column(Modifier.fillMaxSize().padding(inner).verticalScroll(rememberScrollState())) {
+    var tab by rememberSaveable { mutableStateOf(Tab.STATUS) }
+    val actions = Actions(
+        quickCheck = { withNotifications { GateMonitorService.checkOnce(context) } },
+        checkAll = { withNotifications { GateMonitorService.checkAll(context) } },
+        monitor = { withNotifications { GateMonitorService.start(context) } },
+        stop = { GateMonitorService.stop(context) }
+    )
+
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == Tab.STATUS, onClick = { tab = Tab.STATUS },
+                    icon = { Text("▣") }, label = { Text("Status") }
+                )
+                NavigationBarItem(
+                    selected = tab == Tab.MAP, onClick = { tab = Tab.MAP },
+                    icon = { Text("🗺") }, label = { Text("Map") }
+                )
+            }
+        }
+    ) { inner ->
+        Column(Modifier.fillMaxSize().padding(inner)) {
             StatusBanner(state)
-
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (state.running) {
-                    OutlinedButton(onClick = { GateMonitorService.stop(context) }, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (state.monitoring) "Stop monitoring" else "Stop quick check")
-                    }
-                    if (!state.monitoring) {
-                        Text("Quick check running — it carries on with the screen off.", style = MaterialTheme.typography.bodySmall)
-                    }
-                } else {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { withNotifications { GateMonitorService.checkOnce(context) } },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Quick check") }
-                        OutlinedButton(
-                            onClick = { withNotifications { GateMonitorService.checkAll(context) } },
-                            modifier = Modifier.weight(1f)
-                        ) { Text("Check all trains") }
-                    }
-                    OutlinedButton(
-                        onClick = { withNotifications { GateMonitorService.start(context) } },
-                        modifier = Modifier.fillMaxWidth()
-                    ) { Text("Start monitoring") }
-                    Text(
-                        "Quick check looks at the trains near KDTY once. Check all trains looks up every " +
-                            "train again (about a minute). Monitoring checks every minute until you stop it. " +
-                            "All carry on with the screen off and notify you when a train is in the stretch.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                SideCard("From Kottayam", "🟡 at ETM  ·  🔴 KRPP, KDTY", "ETM", state.fromKottayam)
-                SideCard("From Ernakulam", "🟡 arrived PVRD  ·  🔴 left PVRD, VARD, KDTY", "PVRD", state.fromErnakulam)
-
-                if (state.checking) {
-                    state.phase?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                    if (state.total > 0) {
-                        LinearProgressIndicator(
-                            progress = { state.done.toFloat() / state.total },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    } else {
-                        LinearProgressIndicator(Modifier.fillMaxWidth())
-                    }
-                }
-                val footer = buildString {
-                    state.lastChecked?.let { append("Last checked ${hhmm(it)}") }
-                    if (state.failedTrains.isNotEmpty()) append("  •  ${state.failedTrains.size} trains could not be checked")
-                }
-                if (footer.isNotEmpty()) Text(footer, style = MaterialTheme.typography.bodySmall)
-                state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-
-                val upcoming = state.upcoming.take(UPCOMING_SHOWN)
-                if (upcoming.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Due at KDTY next (rough estimate)", style = MaterialTheme.typography.titleSmall)
-                    upcoming.forEach { UpcomingRow(it) }
+            when (tab) {
+                Tab.STATUS -> StatusTab(state, actions, Modifier.weight(1f))
+                Tab.MAP -> {
+                    GateMapTab(state, Modifier.weight(1f))
+                    ActionButtons(state, actions, compact = true, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
                 }
             }
+        }
+    }
+}
+
+private enum class Tab { STATUS, MAP }
+
+private class Actions(val quickCheck: () -> Unit, val checkAll: () -> Unit, val monitor: () -> Unit, val stop: () -> Unit)
+
+/** Quick check / Check all trains / Start monitoring, or Stop while something runs. */
+@Composable
+private fun ActionButtons(state: GateUiState, actions: Actions, compact: Boolean, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (state.running) {
+            OutlinedButton(onClick = actions.stop, modifier = Modifier.fillMaxWidth()) {
+                Text(if (state.monitoring) "Stop monitoring" else "Stop quick check")
+            }
+            if (!state.monitoring && !compact) {
+                Text("Quick check running — it carries on with the screen off.", style = MaterialTheme.typography.bodySmall)
+            }
+        } else if (compact) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Button(onClick = actions.quickCheck, modifier = Modifier.weight(1f)) { Text("Quick check", maxLines = 1) }
+                OutlinedButton(onClick = actions.checkAll, modifier = Modifier.weight(1f)) { Text("Check all", maxLines = 1) }
+                OutlinedButton(onClick = actions.monitor, modifier = Modifier.weight(1f)) { Text("Monitor", maxLines = 1) }
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = actions.quickCheck, modifier = Modifier.weight(1f)) { Text("Quick check") }
+                OutlinedButton(onClick = actions.checkAll, modifier = Modifier.weight(1f)) { Text("Check all trains") }
+            }
+            OutlinedButton(onClick = actions.monitor, modifier = Modifier.fillMaxWidth()) { Text("Start monitoring") }
+            Text(
+                "Quick check looks at the trains near KDTY once. Check all trains looks up every " +
+                    "train again (about a minute). Monitoring checks every minute until you stop it. " +
+                    "All carry on with the screen off and notify you when a train is in the stretch.",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
+}
+
+@Composable
+private fun StatusTab(state: GateUiState, actions: Actions, modifier: Modifier = Modifier) {
+    Column(
+        modifier.verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        ActionButtons(state, actions, compact = false)
+
+        SideCard("From Kottayam", "🟡 at ETM  ·  🔴 KRPP, KDTY", "ETM", state.fromKottayam)
+        SideCard("From Ernakulam", "🟡 arrived PVRD  ·  🔴 left PVRD, VARD, KDTY", "PVRD", state.fromErnakulam)
+
+        if (state.checking) {
+            state.phase?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            if (state.total > 0) {
+                LinearProgressIndicator(
+                    progress = { state.done.toFloat() / state.total },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+            }
+        }
+        val footer = buildString {
+            state.lastChecked?.let { append("Last checked ${hhmm(it)}") }
+            if (state.failedTrains.isNotEmpty()) append("  •  ${state.failedTrains.size} trains could not be checked")
+        }
+        if (footer.isNotEmpty()) Text(footer, style = MaterialTheme.typography.bodySmall)
+        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+
+        val upcoming = state.upcoming.take(UPCOMING_SHOWN)
+        if (upcoming.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text("Due at KDTY next (rough estimate)", style = MaterialTheme.typography.titleSmall)
+            upcoming.forEach { UpcomingRow(it) }
         }
     }
 }

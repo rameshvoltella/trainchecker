@@ -38,6 +38,7 @@ data class GateUiState(
     val fromKottayam: SideState = SideState(),
     val fromErnakulam: SideState = SideState(),
     val upcoming: List<TrainPass> = emptyList(),  // rough KDTY times, sorted
+    val mapTrains: List<MapTrain> = emptyList(),   // nearby trains seen in the last check
     val lastChecked: Long? = null,
     val checking: Boolean = false,
     val phase: String? = null,
@@ -106,6 +107,7 @@ class GateMonitor private constructor(context: Context) {
     private val estimates = mutableMapOf<String, List<CrossingEstimate>>()
     private val ntesRuns = mutableMapOf<String, Pair<Long, List<RunInstance>>>()  // fetched at, runs
     private val failed = mutableSetOf<String>()
+    private val seenThisCycle = mutableMapOf<String, MapTrain>()
 
     private val _state = MutableStateFlow(GateUiState())
     val state: StateFlow<GateUiState> = _state
@@ -175,6 +177,7 @@ class GateMonitor private constructor(context: Context) {
                 trainsFetchedAt = now
             }
             val found = mutableMapOf<Approach, GateLevel>()
+            synchronized(seenThisCycle) { seenThisCycle.clear() }
             if (lookUpAll || now - lastFullScan > FULL_SCAN_EVERY) {
                 if (fullScan(now, found)) lastFullScan = now
             } else if (now - lastEtaRefresh > ETA_REFRESH) {
@@ -182,6 +185,7 @@ class GateMonitor private constructor(context: Context) {
                 lastEtaRefresh = now
             }
             checkNearby(System.currentTimeMillis(), found)
+            _state.update { it.copy(mapTrains = synchronized(seenThisCycle) { seenThisCycle.values.toList() }) }
             _state.update { it.copy(lastChecked = System.currentTimeMillis()) }
         } catch (e: CancellationException) {
             throw e
@@ -255,9 +259,22 @@ class GateMonitor private constructor(context: Context) {
         val newest = reports
             .sortedBy { if (it.source == Source.NTES) 0 else 1 }
             .maxByOrNull { it.eventMillis } ?: return null
-        val verdict = GateRule.evaluate(newest, now, config) ?: return null
+        val verdict = GateRule.evaluate(newest, now, config)
+        seen(train, newest, verdict)
+        if (verdict == null) return null
         Log.d(TAG, "[${train.number}] ${verdict.level}: ${verdict.side} ${newest.event} ${newest.code} (${newest.source})")
         return ZoneHit(train, newest, verdict.level, verdict.estimated)
+    }
+
+    /** Remembers where [train] is, for the map, if it's on the mapped stretch. */
+    private fun seen(train: Train, r: LiveReport, verdict: Verdict?) {
+        val approach = GateRule.approach(r.routeKm, config) ?: return
+        val position = TrainMap.positionOf(r) ?: return
+        val entry = MapTrain(train, r, approach, verdict?.level, verdict?.estimated == true, position)
+        synchronized(seenThisCycle) {
+            val old = seenThisCycle[train.number]
+            if (old == null || r.eventMillis >= old.report.eventMillis) seenThisCycle[train.number] = entry
+        }
     }
 
     /** Shows [hit] if its side has nothing yet, or only a POSSIBLE and this one is CLOSED. */
@@ -294,7 +311,9 @@ class GateMonitor private constructor(context: Context) {
                             val reports = lookUpOnRailYatri(train, now)
                                 ?: fetchNtes(train, now, client)?.mapNotNull { it.liveReport(now) }.orEmpty()
                             for (r in reports.filter { now - it.eventMillis <= RAILYATRI_STALE }) {
-                                val verdict = GateRule.evaluate(r, now, config) ?: continue
+                                val verdict = GateRule.evaluate(r, now, config)
+                                seen(train, r, verdict)
+                                if (verdict == null) continue
                                 record(found, ZoneHit(train, r, verdict.level, verdict.estimated))
                             }
                             _state.update { it.copy(done = it.done + 1) }
