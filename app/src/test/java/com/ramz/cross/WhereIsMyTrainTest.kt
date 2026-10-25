@@ -44,6 +44,15 @@ class WhereIsMyTrainTest {
     }
 
     @Test
+    fun summarisesThePositionInWords() {
+        assertEquals(
+            "Departed Piravom Road (PVRD) at 07:20 · next KPTM",
+            client.summary(stops, at("25-Oct-2026 07:21"))
+        )
+        assertEquals("No running status", client.summary(emptyList(), at("25-Oct-2026 07:21")))
+    }
+
+    @Test
     fun furthestAlongWins() {
         val wimt = client.report(stops, route, "2026-10-25", at("25-Oct-2026 07:22"))!!
         val railYatri = wimt.copy(source = Source.RAILYATRI, code = "KRPP", eventMillis = at("25-Oct-2026 06:59"))

@@ -11,7 +11,7 @@ plugins {
 //   keyAlias=upload
 //   keyPassword=…
 val keystoreProps = Properties().apply {
-    rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
+    rootProject.file("keystore.prperties").takeIf { it.exists() }?.inputStream()?.use(::load)
 }
 
 android {

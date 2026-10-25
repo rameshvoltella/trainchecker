@@ -34,6 +34,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.OutlinedTextField
@@ -215,7 +217,13 @@ private fun StatusTab(state: GateUiState, actions: Actions, modifier: Modifier =
         if (upcoming.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             Text("Due at KDTY next (rough estimate)", style = MaterialTheme.typography.titleSmall)
-            upcoming.forEach { UpcomingRow(it) }
+            Text("Position: Where is my Train", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val positions by DuePositions.positions.collectAsStateWithLifecycle()
+            val numbers = upcoming.map { it.train.number }
+            // Again after every check; DuePositions skips trains looked up in the last 2 minutes.
+            LaunchedEffect(numbers, state.lastChecked) { DuePositions.request(numbers) }
+            upcoming.forEach { UpcomingRow(it, positions[it.train.number]) }
         }
 
         Spacer(Modifier.height(8.dp))
@@ -385,8 +393,8 @@ private fun SideCard(title: String, rule: String, possibleAt: String, side: Side
 }
 
 @Composable
-private fun UpcomingRow(pass: TrainPass) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun UpcomingRow(pass: TrainPass, position: DuePosition?) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.Top) {
         Text("~${hhmm(pass.estimate.etaMillis)}", fontWeight = FontWeight.Bold, modifier = Modifier.width(64.dp))
         Column(Modifier.weight(1f)) {
             Text("${pass.train.number} ${pass.train.name}", maxLines = 1, style = MaterialTheme.typography.bodyMedium)
@@ -395,6 +403,20 @@ private fun UpcomingRow(pass: TrainPass) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            when (position) {
+                null, DuePosition.Loading -> Text("📍 Finding position…", style = MaterialTheme.typography.bodySmall)
+                is DuePosition.Shown -> Text("📍 ${position.text}", style = MaterialTheme.typography.bodySmall)
+                is DuePosition.Failed -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "📍 Couldn't get position: ${position.reason}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 2,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { DuePositions.retry(pass.train.number) }) { Text("Retry") }
+                }
+            }
         }
     }
 }

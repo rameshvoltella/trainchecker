@@ -65,6 +65,21 @@ class WhereIsMyTrainClient {
         )
     }
 
+    /** Where the train is, in words, straight from the page (no route needed). */
+    fun summary(stops: List<WimtStop>, now: Long): String {
+        val i = stops.indexOfLast { it.reached }
+        if (stops.isEmpty()) return "No running status"
+        if (i < 0) return "Not started yet"
+        val here = stops[i]
+        val where = "${here.name} (${here.code})"
+        if (i == stops.lastIndex) return "Reached $where" + (here.arrival?.let { " at ${hhmm(past(it, now))}" } ?: "")
+        val departed = here.departure?.let { past(it, now) }?.takeIf { it <= now }
+        return if (departed != null) "Departed $where at ${hhmm(departed)} · next ${stops[i + 1].code}"
+        else "At $where" + (here.arrival?.let { " since ${hhmm(past(it, now))}" } ?: "")
+    }
+
+    private fun hhmm(millis: Long) = SimpleDateFormat("HH:mm", Locale.ENGLISH).apply { timeZone = IST }.format(millis)
+
     // The page shows clock times only: take the most recent such time (it has happened) …
     private fun past(clock: String, now: Long): Long {
         val t = today(clock, now)
