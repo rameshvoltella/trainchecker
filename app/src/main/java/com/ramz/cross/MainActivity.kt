@@ -34,6 +34,16 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlin.math.abs
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -206,6 +216,99 @@ private fun StatusTab(state: GateUiState, actions: Actions, modifier: Modifier =
             Spacer(Modifier.height(8.dp))
             Text("Due at KDTY next (rough estimate)", style = MaterialTheme.typography.titleSmall)
             upcoming.forEach { UpcomingRow(it) }
+        }
+
+        Spacer(Modifier.height(8.dp))
+        CompareSection()
+    }
+}
+
+/** Type a train number, see where NTES, Where is my Train and RailYatri each say it is. */
+@Composable
+private fun CompareSection() {
+    val scope = rememberCoroutineScope()
+    val keyboard = LocalSoftwareKeyboardController.current
+    var number by rememberSaveable { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var result by remember { mutableStateOf<Comparison?>(null) }
+    var job by remember { mutableStateOf<Job?>(null) }
+
+    fun search() {
+        val n = number.trim()
+        if (n.length != 5) return
+        keyboard?.hide()
+        job?.cancel()
+        loading = true
+        result = null
+        job = scope.launch {
+            try {
+                result = TrainCompare.compare(n)
+            } finally {
+                loading = false
+            }
+        }
+    }
+
+    Text("Compare sources", style = MaterialTheme.typography.titleSmall)
+    Text("Where NTES, Where is my Train and RailYatri each say a train is.", style = MaterialTheme.typography.bodySmall)
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = number,
+            onValueChange = { v -> number = v.filter(Char::isDigit).take(5) },
+            label = { Text("Train number") },
+            placeholder = { Text("e.g. 66322") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { search() }),
+            modifier = Modifier.weight(1f)
+        )
+        Button(onClick = ::search, enabled = number.length == 5 && !loading) { Text("Search") }
+    }
+    if (loading) {
+        LinearProgressIndicator(Modifier.fillMaxWidth())
+        Text("Asking all three sites…", style = MaterialTheme.typography.bodySmall)
+    }
+    result?.let { CompareResult(it) }
+}
+
+@Composable
+private fun CompareResult(c: Comparison) {
+    Text(
+        "Train ${c.trainNumber}" + (c.startDate?.let { "  ·  run started $it" } ?: ""),
+        fontWeight = FontWeight.SemiBold
+    )
+    val ntesKm = c.answers.firstOrNull { it.source == Source.NTES }?.report?.let { c.route[it.code] }
+    c.answers.forEach { a ->
+        val r = a.report
+        val best = a.source == c.furthest
+        Card(
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = if (best) OpenGreen.copy(alpha = 0.14f) else MaterialTheme.colorScheme.surfaceVariant
+            )
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(a.source.label, style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
+                    if (best) Text("✓ furthest along", color = OpenGreen, style = MaterialTheme.typography.labelMedium)
+                }
+                if (r != null) {
+                    Text("${r.event} ${r.name} (${r.code})", fontWeight = FontWeight.SemiBold)
+                    val km = c.route[r.code]
+                    Text(
+                        "at ${hhmm(r.eventMillis)}" + (km?.let { " · km ${"%.0f".format(it)}" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    if (a.source == Source.WIMT && km != null && ntesKm != null && abs(km - ntesKm) > 100) {
+                        Text(
+                            "Far from NTES's position — may be a different day's run of this train",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                } else {
+                    Text(a.problem ?: "No data", style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
     }
 }

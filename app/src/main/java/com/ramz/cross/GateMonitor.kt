@@ -56,13 +56,14 @@ data class GateUiState(
 /**
  * Watches the KDTY gate while [run] is active (driven by [GateMonitorService]).
  *
- * RailYatri is the main source; NTES is the backup.
+ * Positions come from RailYatri, NTES and Where is my Train; whichever puts a train furthest
+ * along wins (each lags behind the others at times).
  *
  * Every [CYCLE]:
- *  • Trains due at KDTY between [CANDIDATE_BEFORE] ago and [CANDIDATE_AHEAD] ahead are checked on
- *    RailYatri, nearest first. NTES (a ~1.2 MB page) is asked too only when RailYatri has nothing
- *    usable for that run, or its report is older than [RAILYATRI_STALE] — at most every
- *    [NTES_REFRESH] per train. If both have a report, the newer one wins.
+ *  • Trains due at KDTY between [CANDIDATE_BEFORE] ago and [CANDIDATE_AHEAD] ahead are checked,
+ *    nearest first, on RailYatri and Where is my Train. NTES (a ~1.2 MB page) is asked every
+ *    check for trains within [NEAR_KDTY] of KDTY, otherwise at most every [NTES_REFRESH] unless
+ *    RailYatri has nothing fresh. See [checkTrain].
  *    Once one side has a train in its stretch, that side's remaining trains are skipped.
  *  • Every [ETA_REFRESH], RailYatri refreshes the rough KDTY times of trains due in the next 3 h.
  *  • Every [FULL_SCAN_EVERY], every Kottayam–Ernakulam train is looked up on RailYatri (runs that
@@ -78,6 +79,9 @@ class GateMonitor private constructor(context: Context) {
         private const val CANDIDATE_BEFORE = 30 * MIN
         private const val CANDIDATE_AHEAD = 45 * MIN
         private const val NTES_REFRESH = 3 * MIN
+        private const val NTES_REFRESH_CLOSE = 1 * MIN      // trains within NEAR_KDTY: every check
+        private const val NEAR_KDTY = 25 * MIN
+        private const val WIMT_MAX_KM_FROM_KDTY = 100.0
         private const val RAILYATRI_STALE = 5 * MIN
         private val START_DAYS = 0..2   // runs that started today, yesterday, the day before
         private const val ETA_REFRESH = 10 * MIN
@@ -95,6 +99,7 @@ class GateMonitor private constructor(context: Context) {
 
     private val trainRepo = TrainRepository()
     private val railYatri = RailYatriClient()
+    private val whereIsMyTrain = WhereIsMyTrainClient()
     private val ntes = NtesClient()
     private val cacheFile = File(context.filesDir, "gate_cache.json")
 
@@ -232,39 +237,59 @@ class GateMonitor private constructor(context: Context) {
         }
     }
 
-    /** Newest report of this run from RailYatri and NTES, judged by the gate rule. */
+    /**
+     * Where this run is, by RailYatri, NTES and Where is my Train — whichever puts it furthest
+     * along — judged by the gate rule. NTES (a large page) is asked every check for trains close
+     * to KDTY, otherwise at most every [NTES_REFRESH] or when RailYatri has nothing fresh.
+     */
     private fun checkTrain(train: Train, est: CrossingEstimate, now: Long): ZoneHit? {
         // Reports whose route doesn't pass KDTY from this side are ignored
         // (RailYatri has wrong timetables for some MEMUs).
         fun usable(r: LiveReport) = r.startDate == est.startDate && GateRule.approach(r.routeKm, config) == est.approach
 
-        val reports = mutableListOf<LiveReport>()
+        var railYatri: LiveReport? = null
         try {
-            val ry = railYatri.status(train.number, startDay(est.startDate, now), config)
-            ry.report?.takeIf(::usable)?.let(reports::add)
+            val ry = this.railYatri.status(train.number, startDay(est.startDate, now), config)
+            railYatri = ry.report?.takeIf(::usable)
             ry.estimate?.let { updateEstimate(train.number, it) }
         } catch (e: Exception) {
             Log.w(TAG, "[${train.number}] RailYatri: ${e.javaClass.simpleName}: ${e.message}")
         }
-        val railYatriFresh = reports.any { now - it.eventMillis <= RAILYATRI_STALE }
-        if (!railYatriFresh) {
-            val cached = synchronized(estimates) { ntesRuns[train.number] }
-            if (cached == null || now - cached.first > NTES_REFRESH) fetchNtes(train, now)
-            synchronized(estimates) { ntesRuns[train.number] }?.second
-                ?.firstOrNull { it.isoStartDate() == est.startDate }
-                ?.liveReport(now)?.takeIf(::usable)?.let(reports::add)
+
+        val close = abs(est.etaMillis - now) <= NEAR_KDTY
+        val railYatriFresh = railYatri != null && now - railYatri.eventMillis <= RAILYATRI_STALE
+        val cached = synchronized(estimates) { ntesRuns[train.number] }
+        val ntesAge = cached?.let { now - it.first } ?: Long.MAX_VALUE
+        if (ntesAge > (if (close || !railYatriFresh) NTES_REFRESH_CLOSE else NTES_REFRESH)) fetchNtes(train, now)
+        val ntesRun = synchronized(estimates) { ntesRuns[train.number] }?.second
+            ?.firstOrNull { it.isoStartDate() == est.startDate }
+        val ntes = ntesRun?.liveReport(now)?.takeIf(::usable)
+
+        // Where is my Train has no km or run date: place it on NTES's (or RailYatri's) route, and
+        // only trust it near KDTY, so a different run of the same train can't be mistaken for this one.
+        val route = ntesRun?.routeKm() ?: railYatri?.routeKm
+        val wimt = route?.let { r ->
+            try {
+                whereIsMyTrain.report(whereIsMyTrain.stops(train.number), r, est.startDate, now)
+                    ?.takeIf { abs(r.getValue(it.code) - (r[config.stationCode] ?: Double.MAX_VALUE)) <= WIMT_MAX_KM_FROM_KDTY }
+                    ?.takeIf(::usable)
+            } catch (e: Exception) {
+                Log.w(TAG, "[${train.number}] Where is my Train: ${e.javaClass.simpleName}: ${e.message}")
+                null
+            }
         }
 
-        // Newest report wins; NTES first so it wins a tie.
-        val newest = reports
-            .sortedBy { if (it.source == Source.NTES) 0 else 1 }
-            .maxByOrNull { it.eventMillis } ?: return null
-        val verdict = GateRule.evaluate(newest, now, config)
-        seen(train, newest, verdict)
+        val reports = listOfNotNull(ntes, wimt, railYatri)
+        val best = GateRule.furthestAlong(reports, route ?: return null) ?: return null
+        Log.d(TAG, "[${train.number}] " + reports.joinToString { "${it.source.label}: ${it.event} ${it.code} ${hhmm(it.eventMillis)}" } +
+            " → using ${best.source.label}")
+        val verdict = GateRule.evaluate(best, now, config)
+        seen(train, best, verdict)
         if (verdict == null) return null
-        Log.d(TAG, "[${train.number}] ${verdict.level}: ${verdict.side} ${newest.event} ${newest.code} (${newest.source})")
-        return ZoneHit(train, newest, verdict.level, verdict.estimated)
+        return ZoneHit(train, best, verdict.level, verdict.estimated)
     }
+
+    private fun hhmm(millis: Long) = SimpleDateFormat("HH:mm", Locale.ENGLISH).apply { timeZone = IST }.format(millis)
 
     /** Remembers where [train] is, for the map, if it's on the mapped stretch. */
     private fun seen(train: Train, r: LiveReport, verdict: Verdict?) {

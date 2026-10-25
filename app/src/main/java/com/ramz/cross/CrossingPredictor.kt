@@ -31,7 +31,7 @@ enum class GateLevel { POSSIBLE, CLOSED }
 
 const val MIN = 60_000L
 
-enum class Source(val label: String) { NTES("NTES"), RAILYATRI("RailYatri") }
+enum class Source(val label: String) { NTES("NTES"), WIMT("Where is my Train"), RAILYATRI("RailYatri") }
 
 /**
  * The latest known location of one run of a train, from either source.
@@ -53,6 +53,22 @@ data class LiveReport(
 data class Verdict(val side: Approach, val level: GateLevel, val estimated: Boolean)
 
 object GateRule {
+
+    /**
+     * Of several reports of the same run, the one that puts the train furthest along its route —
+     * a source that has already seen it at KDTY beats one still showing ETM. "Departed from" a
+     * station counts as further than "Arrived at" it. Positions are compared on [route] (one
+     * source's km, so all reports use the same scale); if level, the newer report wins, then
+     * NTES, then Where is my Train, then RailYatri.
+     */
+    fun furthestAlong(reports: List<LiveReport>, route: Map<String, Double>): LiveReport? =
+        reports.maxWithOrNull(
+            compareBy<LiveReport>(
+                { (route[it.code] ?: it.routeKm[it.code] ?: Double.NEGATIVE_INFINITY) + if (it.moving) 0.5 else 0.0 },
+                { it.eventMillis },
+                { -it.source.ordinal }
+            )
+        )
 
     /** Which side of KDTY a train comes from, or null if its route doesn't pass KDTY. */
     fun approach(routeKm: Map<String, Double>, cfg: CrossingConfig = CrossingConfig()): Approach? {
