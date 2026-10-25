@@ -45,6 +45,28 @@ object TrainMap {
     )
 
     /**
+     * km along the line from Kottayam towards Ernakulam (from RailYatri's timetables). ERS is
+     * approximate; it is only used to tell the direction and is beyond the gate's stretch.
+     */
+    private val lineKm = mapOf(
+        "KTYM" to 0.0, "KFQ" to 3.2, "ETM" to 10.0, "KRPP" to 18.0, "KDTY" to 21.1, "VARD" to 25.0,
+        "PVRD" to 31.0, "KPTM" to 37.4, "MNTT" to 42.7, "KFE" to 46.1, "TRTR" to 50.0, "ERS" to 57.0, "ERN" to 62.0
+    )
+
+    /**
+     * A route (km growing in the direction of travel) for a train whose stops are listed in
+     * travel order, built from [lineKm] — so a source without distances can be judged on its own.
+     * Null if fewer than two of its stops are on this line.
+     */
+    fun lineRoute(stopCodes: List<String>): Map<String, Double>? {
+        val onLine = stopCodes.filter { it in lineKm }
+        if (onLine.size < 2) return null
+        val towardsErnakulam = lineKm.getValue(onLine.last()) > lineKm.getValue(onLine.first())
+        val end = lineKm.values.max()
+        return lineKm.mapValues { (_, km) -> if (towardsErnakulam) km else end - km }
+    }
+
+    /**
      * Where the train is on the map: between the two mapped stations around its km now (or at the
      * station it was last reported at). Null if it's outside the mapped stretch.
      */

@@ -5,7 +5,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -20,13 +19,12 @@ sealed interface DuePosition {
 /**
  * Current positions, from Where is my Train, of the trains in "Due at KDTY next".
  *
- * Lookups go through one queue, one train at a time with [GAP] between them, so the site never
- * sees a burst of requests from us. A result stays good for [FRESH]; [retry] asks again anyway.
+ * Lookups go through one queue, one train at a time; [WhereIsMyTrainClient] spaces requests out
+ * so the site never sees a burst from us. A result stays good for [FRESH]; [retry] asks again anyway.
  */
 object DuePositions {
 
     private const val TAG = "DuePositions"
-    private const val GAP = 2_000L
     private const val FRESH = 2 * MIN
 
     private val client = WhereIsMyTrainClient()
@@ -45,7 +43,6 @@ object DuePositions {
                     val reason = e.message?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName
                     _positions.update { it + (number to DuePosition.Failed(reason)) }
                 }
-                delay(GAP)
             }
         }
     }

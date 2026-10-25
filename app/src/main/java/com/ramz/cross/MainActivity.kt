@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -191,6 +192,7 @@ private fun StatusTab(state: GateUiState, actions: Actions, modifier: Modifier =
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         ActionButtons(state, actions, compact = false)
+        SpotSourcesRow()
 
         SideCard("From Kottayam", "🟡 at ETM  ·  🔴 KRPP, KDTY", "ETM", state.fromKottayam)
         SideCard("From Ernakulam", "🟡 arrived PVRD  ·  🔴 left PVRD, VARD, KDTY", "PVRD", state.fromErnakulam)
@@ -228,6 +230,46 @@ private fun StatusTab(state: GateUiState, actions: Actions, modifier: Modifier =
 
         Spacer(Modifier.height(8.dp))
         CompareSection()
+    }
+}
+
+/** Which sites spot nearby trains during a check (see [SpotSources]). */
+@Composable
+private fun SpotSourcesRow() {
+    val context = LocalContext.current
+    val spot = remember { SpotSources.get(context) }
+    val choice by spot.choice.collectAsStateWithLifecycle()
+
+    @Composable
+    fun Tick(label: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) =
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = checked, onCheckedChange = onChange, enabled = enabled)
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+        }
+
+    Column {
+        Text("Spot trains using", style = MaterialTheme.typography.labelLarge)
+        Tick("Include all (NTES, Where is my Train, RailYatri)", choice.all) { spot.set(choice.copy(all = it)) }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            // At least one stays ticked: unticking the last one is ignored.
+            Tick("NTES", choice.all || choice.ntes, enabled = !choice.all) {
+                if (it || choice.wimt) spot.set(choice.copy(ntes = it))
+            }
+            Tick("Where is my Train", choice.all || choice.wimt, enabled = !choice.all) {
+                if (it || choice.ntes) spot.set(choice.copy(wimt = it))
+            }
+        }
+        Text(
+            when {
+                choice.all -> "Most accurate; uses the most data."
+                choice.sources == setOf(Source.WIMT) ->
+                    "Fastest, little data. Express trains from Kottayam show yellow, not red (the site lists only stops)."
+                choice.sources == setOf(Source.NTES) -> "NTES only: accurate, but large downloads."
+                else -> "NTES and Where is my Train: whichever is further along."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 

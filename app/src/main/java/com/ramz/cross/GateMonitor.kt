@@ -100,6 +100,7 @@ class GateMonitor private constructor(context: Context) {
     private val trainRepo = TrainRepository()
     private val railYatri = RailYatriClient()
     private val whereIsMyTrain = WhereIsMyTrainClient()
+    private val spotSources = SpotSources.get(context)
     private val ntes = NtesClient()
     private val cacheFile = File(context.filesDir, "gate_cache.json")
 
@@ -238,17 +239,20 @@ class GateMonitor private constructor(context: Context) {
     }
 
     /**
-     * Where this run is, by RailYatri, NTES and Where is my Train — whichever puts it furthest
-     * along — judged by the gate rule. NTES (a large page) is asked every check for trains close
-     * to KDTY, otherwise at most every [NTES_REFRESH] or when RailYatri has nothing fresh.
+     * Where this run is, by the sites ticked in [SpotSources] — whichever puts it furthest along —
+     * judged by the gate rule. With all ticked: RailYatri and Where is my Train every check, NTES
+     * (a large page) every check for trains close to KDTY, otherwise at most every [NTES_REFRESH]
+     * or when RailYatri has nothing fresh.
      */
     private fun checkTrain(train: Train, est: CrossingEstimate, now: Long): ZoneHit? {
+        val use = spotSources.choice.value.sources
+
         // Reports whose route doesn't pass KDTY from this side are ignored
         // (RailYatri has wrong timetables for some MEMUs).
         fun usable(r: LiveReport) = r.startDate == est.startDate && GateRule.approach(r.routeKm, config) == est.approach
 
         var railYatri: LiveReport? = null
-        try {
+        if (Source.RAILYATRI in use) try {
             val ry = this.railYatri.status(train.number, startDay(est.startDate, now), config)
             railYatri = ry.report?.takeIf(::usable)
             ry.estimate?.let { updateEstimate(train.number, it) }
@@ -256,31 +260,39 @@ class GateMonitor private constructor(context: Context) {
             Log.w(TAG, "[${train.number}] RailYatri: ${e.javaClass.simpleName}: ${e.message}")
         }
 
-        val close = abs(est.etaMillis - now) <= NEAR_KDTY
-        val railYatriFresh = railYatri != null && now - railYatri.eventMillis <= RAILYATRI_STALE
-        val cached = synchronized(estimates) { ntesRuns[train.number] }
-        val ntesAge = cached?.let { now - it.first } ?: Long.MAX_VALUE
-        if (ntesAge > (if (close || !railYatriFresh) NTES_REFRESH_CLOSE else NTES_REFRESH)) fetchNtes(train, now)
-        val ntesRun = synchronized(estimates) { ntesRuns[train.number] }?.second
-            ?.firstOrNull { it.isoStartDate() == est.startDate }
+        var ntesRun: RunInstance? = null
+        if (Source.NTES in use) {
+            val close = abs(est.etaMillis - now) <= NEAR_KDTY
+            val railYatriStale = Source.RAILYATRI in use &&
+                (railYatri == null || now - railYatri.eventMillis > RAILYATRI_STALE)
+            val cached = synchronized(estimates) { ntesRuns[train.number] }
+            val ntesAge = cached?.let { now - it.first } ?: Long.MAX_VALUE
+            if (ntesAge > (if (close || railYatriStale) NTES_REFRESH_CLOSE else NTES_REFRESH)) fetchNtes(train, now)
+            ntesRun = synchronized(estimates) { ntesRuns[train.number] }?.second
+                ?.firstOrNull { it.isoStartDate() == est.startDate }
+        }
         val ntes = ntesRun?.liveReport(now)?.takeIf(::usable)
 
-        // Where is my Train has no km or run date: place it on NTES's (or RailYatri's) route, and
-        // only trust it near KDTY, so a different run of the same train can't be mistaken for this one.
-        val route = ntesRun?.routeKm() ?: railYatri?.routeKm
-        val wimt = route?.let { r ->
-            try {
-                whereIsMyTrain.report(whereIsMyTrain.stops(train.number), r, est.startDate, now)
+        // Where is my Train has no km or run date: place it on NTES's or RailYatri's route (or, with
+        // neither asked, the fixed Kottayam–Ernakulam distances), and only trust it near KDTY, so a
+        // different run of the same train can't be mistaken for this one.
+        var wimtRoute: Map<String, Double>? = null
+        val wimt = if (Source.WIMT !in use) null else try {
+            val stops = whereIsMyTrain.stops(train.number)
+            wimtRoute = ntesRun?.routeKm() ?: railYatri?.routeKm ?: TrainMap.lineRoute(stops.map { it.code })
+            wimtRoute?.let { r ->
+                whereIsMyTrain.report(stops, r, est.startDate, now)
                     ?.takeIf { abs(r.getValue(it.code) - (r[config.stationCode] ?: Double.MAX_VALUE)) <= WIMT_MAX_KM_FROM_KDTY }
                     ?.takeIf(::usable)
-            } catch (e: Exception) {
-                Log.w(TAG, "[${train.number}] Where is my Train: ${e.javaClass.simpleName}: ${e.message}")
-                null
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "[${train.number}] Where is my Train: ${e.javaClass.simpleName}: ${e.message}")
+            null
         }
 
+        val route = ntesRun?.routeKm() ?: railYatri?.routeKm ?: wimtRoute ?: return null
         val reports = listOfNotNull(ntes, wimt, railYatri)
-        val best = GateRule.furthestAlong(reports, route ?: return null) ?: return null
+        val best = GateRule.furthestAlong(reports, route) ?: return null
         Log.d(TAG, "[${train.number}] " + reports.joinToString { "${it.source.label}: ${it.event} ${it.code} ${hhmm(it.eventMillis)}" } +
             " → using ${best.source.label}")
         val verdict = GateRule.evaluate(best, now, config)

@@ -5,6 +5,7 @@ import org.jsoup.nodes.Document
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
+import kotlin.random.Random
 
 /** One station card on whereismytrain.org.in. Times are as shown ("07:16 AM"): actual or expected. */
 data class WimtStop(val code: String, val name: String, val reached: Boolean, val arrival: String?, val departure: String?)
@@ -17,18 +18,47 @@ data class WimtStop(val code: String, val name: String, val reached: Boolean, va
  * DEPARTURE, the bold time is actual/expected and the grey one scheduled.
  *
  * The page has no km or run date, so the train is placed on another source's route ([report]).
+ *
+ * The site is asked gently, like one person browsing: one request at a time across the whole
+ * app, 1.5–3 s apart at random, with browser headers and the site's cookie, and a train asked
+ * about in the last [CACHE_FOR] is answered from memory.
  */
 class WhereIsMyTrainClient {
 
     companion object {
         private const val UA =
-            "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 Chrome/120.0 Mobile Safari/537.36"
+            "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
         private val TITLE = Regex("""^(.*?)\s*\(([A-Z0-9]+)\)$""")
         private val TIME = Regex("""^\d{1,2}:\d{2}\s*[AP]M$""", RegexOption.IGNORE_CASE)
+        private const val BASE = "https://whereismytrain.org.in/"
+        private const val CACHE_FOR = 45_000L
+
+        // Shared by every client: requests are spaced out across the whole app.
+        private val lock = Any()
+        private var lastRequest = 0L
+        private val cookies = mutableMapOf<String, String>()
+        private val recent = mutableMapOf<String, Pair<Long, List<WimtStop>>>()
     }
 
-    fun stops(trainNumber: String): List<WimtStop> =
-        parse(Jsoup.connect("https://whereismytrain.org.in/?trainNo=$trainNumber").userAgent(UA).timeout(20_000).get())
+    fun stops(trainNumber: String): List<WimtStop> = synchronized(lock) {
+        recent[trainNumber]?.takeIf { System.currentTimeMillis() - it.first < CACHE_FOR }?.let { return it.second }
+        val wait = lastRequest + Random.nextLong(1_500L, 3_000L) - System.currentTimeMillis()
+        if (wait > 0) Thread.sleep(wait)
+        try {
+            val resp = Jsoup.connect("$BASE?trainNo=$trainNumber")
+                .userAgent(UA)
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "en-IN,en;q=0.9")
+                .referrer(BASE)
+                .cookies(cookies)
+                .timeout(20_000)
+                .execute()
+            cookies.putAll(resp.cookies())
+            parse(resp.parse()).also { recent[trainNumber] = System.currentTimeMillis() to it }
+        } finally {
+            lastRequest = System.currentTimeMillis()
+        }
+    }
 
     fun parse(doc: Document): List<WimtStop> =
         doc.select("div.flex-grow.rounded-lg").mapNotNull { card ->
